@@ -26,19 +26,17 @@ python uitls/preprocess_custom_data.py --data superuser
 Optional arguments:
     --data                  Dataset name
     --bs                    Batch size
-    --n_degree              Number of neighbors to sample
-    --n_head                Number of heads used in attention layer
-    --n_epoch               Number of epochs
+    --n_head                Number of attention heads used in neighborhood aggregation
+    --n_epoch               Number of training epochs
     --n_layer               Number of network layers
     --lr                    Learning rate
     --gpu                   GPU id
     --patience              Patience for early stopping
     --enable_random         Use random seeds
-    --gradient              Disable gradient blocking
-    --reuse                 Enable caching and reusing
-    --budget                Cache size
-    --new                   Use intermediate embeddings in attention modules
-    --optimize_memory       Optimize memory update
+    --topk                  Threshold
+    --tppr_strategy         Strategy used for answering top-k T-PPR query [streaming|pruning]
+    --alpha_list            Alpha values used in T-PPR metrics
+    --beta_list             Beta values used in T-PPR metrics
     
 Example usage:
     python train.py --n_epoch 50 --n_layer 2 --bs 200 -d askubuntu --gpu 0  --optimize_memory --new --reuse --budget 1000 --lr 1e-6
