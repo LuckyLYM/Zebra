@@ -1,2 +1,45 @@
-# Zebra
+Zebra: When Temporal Graph Neural Networks Meet Temporal Personalized PageRank
+=============================================================================
+
 Code repository for VLDB2023 submission
+
+## Dataset
+6 datasets were used in this paper:
+
+- Wikipedia: downloadable from http://snap.stanford.edu/jodie/.
+- Reddit: downloadable from http://snap.stanford.edu/jodie/.
+- MOOC: downloadable from http://snap.stanford.edu/jodie/.
+- AskUbuntu: downloadable from http://snap.stanford.edu/data/sx-askubuntu.html.
+- SuperUser: downloadable from http://snap.stanford.edu/data/sx-superuser.html.
+- Wiki-Talk: downloadable from http://snap.stanford.edu/data/wiki-talk-temporal.html.
+
+## Preprocessing
+If edge features or nodes features are absent, they will be replaced by a vector of zeros. Example usage:
+```sh
+python utils/preprocess_data.py --data wikipedia --bipartite
+python uitls/preprocess_custom_data.py --data superuser
+```
+
+
+## Usage
+```sh
+Optional arguments:
+    --data                  Dataset name
+    --bs                    Batch size
+    --n_degree              Number of neighbors to sample
+    --n_head                Number of heads used in attention layer
+    --n_epoch               Number of epochs
+    --n_layer               Number of network layers
+    --lr                    Learning rate
+    --gpu                   GPU id
+    --patience              Patience for early stopping
+    --enable_random         Use random seeds
+    --gradient              Disable gradient blocking
+    --reuse                 Enable caching and reusing
+    --budget                Cache size
+    --new                   Use intermediate embeddings in attention modules
+    --optimize_memory       Optimize memory update
+    
+Example usage:
+    python train.py --n_epoch 50 --n_layer 2 --bs 200 -d askubuntu --gpu 0  --optimize_memory --new --reuse --budget 1000 --lr 1e-6
+```
