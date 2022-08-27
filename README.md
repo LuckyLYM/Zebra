@@ -17,7 +17,7 @@ Code repository for VLDB2023 submission
 If edge features or nodes features are absent, they will be replaced by a vector of zeros. Example usage:
 ```sh
 python utils/preprocess_data.py --data wikipedia --bipartite
-python uitls/preprocess_custom_data.py --data superuser
+python utils/preprocess_custom_data.py --data superuser
 ```
 
 
