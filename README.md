@@ -33,11 +33,11 @@ Optional arguments:
     --gpu                   GPU id
     --patience              Patience for early stopping
     --enable_random         Use random seeds
-    --topk                  Threshold
+    --topk                  Top-k threshold
     --tppr_strategy         Strategy used for answering top-k T-PPR query [streaming|pruning]
     --alpha_list            Alpha values used in T-PPR metrics
     --beta_list             Beta values used in T-PPR metrics
     
 Example usage:
-    python train.py --n_epoch 50 --n_layer 2 --bs 200 -d askubuntu --gpu 0  --optimize_memory --new --reuse --budget 1000 --lr 1e-6
+    python train.py --n_epoch 50 --bs 200 --data wikipedia --enable_random  --tppr_strategy streaming  --topk 20 --alpha_list 0.1 0.1 --beta_list 0.5 0.95 --gpu 0
 ```
