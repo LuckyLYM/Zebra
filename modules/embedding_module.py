@@ -1,25 +1,11 @@
-from numpy.core.fromnumeric import argmax
-from numpy.lib.arraysetops import unique
-from numpy.lib.utils import source
-from sympy import arg
 import torch
 from torch import nn
 import numpy as np
 from utils.util import tppr_finder
 import math
 import time
-import sys
-from modules.history import History
 from model.temporal_attention import TemporalAttentionLayer
-from collections import defaultdict
-from numba import int32, float32, types, typed, njit, prange
-import numba as nb
-import scipy.sparse as sp
-import copy
-import heapq
-from operator import itemgetter
-
-
+from numba import njit
 
 
 @njit
@@ -74,7 +60,7 @@ class TimeEmbedding(EmbeddingModule):
 class GraphEmbedding(EmbeddingModule):
   def __init__(self, node_features, edge_features, memory, neighbor_finder, time_encoder, n_layers,
                n_node_features, n_edge_features, n_time_features, embedding_dimension, device,
-               n_heads=2, dropout=0.1, use_memory=True, reuse=False, history_budget=0,args=None, num_nodes = -1):
+               n_heads=2, dropout=0.1, use_memory=True, args=None, num_nodes = -1):
     
     super(GraphEmbedding, self).__init__(node_features, edge_features, memory,
                                          neighbor_finder, time_encoder, n_layers,
@@ -83,120 +69,19 @@ class GraphEmbedding(EmbeddingModule):
     self.use_memory = use_memory
     self.device = device
     self.args=args
-    self.budget=history_budget
     self.num_nodes=num_nodes
     self.t_tppr=0
 
 
-  def compute_embedding(self, memory, source_nodes, timestamps, n_layers, n_neighbors,memory_updater,train):
-    assert (n_layers >= 0)
-    if n_layers == 0:
-      if train:
-        index = numba_unique(source_nodes)
-        memory,_=memory_updater.get_updated_memory(memory,index)
-      source_node_features = memory[source_nodes, :]
-      return source_node_features, memory
-    else:
-      neighbors, edge_idxs, edge_times = self.neighbor_finder.get_temporal_neighbor(source_nodes,timestamps,n_neighbors)
-      neighbors_torch = torch.from_numpy(neighbors).long().to(self.device)
-      edge_idxs = torch.from_numpy(edge_idxs).long().to(self.device)
-      edge_deltas = timestamps[:, np.newaxis] - edge_times
-      edge_deltas_torch = torch.from_numpy(edge_deltas).float().to(self.device)
-      neighbors = neighbors.flatten() 
-      neighbor_embeddings,memory = self.compute_embedding(memory,neighbors,np.repeat(timestamps, n_neighbors),n_layers=n_layers - 1,n_neighbors=n_neighbors,memory_updater=memory_updater,train=train)
-      effective_n_neighbors = n_neighbors if n_neighbors > 0 else 1
-
-      source_node_features = memory[source_nodes, :]
-      neighbor_embeddings = neighbor_embeddings.view(len(source_nodes), effective_n_neighbors, -1)
-      edge_time_embeddings = self.time_encoder(edge_deltas_torch)
-      edge_features = self.edge_features[edge_idxs, :]
-      mask = neighbors_torch == 0
-      source_nodes_time_embedding = self.time_encoder(torch.zeros((len(timestamps),1),device=self.device))
-      source_embedding = self.aggregate(n_layers, source_node_features,source_nodes_time_embedding, neighbor_embeddings,edge_time_embeddings,edge_features,mask)
-      return source_embedding, memory
-
-
-  def new_compute_embedding(self, memory, source_nodes, timestamps, n_layers, n_neighbors, memory_updater,train, input_edge_times):
-  
-    if n_layers == 0:    
-      if train:
-        index = numba_unique(source_nodes)
-        memory,_=memory_updater.get_updated_memory(memory,index)
-      source_node_features = memory[source_nodes, :]
-      return source_node_features
-    else:
-      if self.args.not_fix_sampler:
-        neighbors, edge_idxs, edge_times = self.neighbor_finder.get_temporal_neighbor(source_nodes,timestamps,n_neighbors)
-      else:
-        neighbors, edge_idxs, edge_times = self.neighbor_finder.get_temporal_neighbor(source_nodes,input_edge_times,n_neighbors)
-
-      source_nodes_time_embedding = self.time_encoder(torch.zeros((len(timestamps),1),device=self.device))
-      edge_idxs = torch.from_numpy(edge_idxs).long().to(self.device)
-      edge_deltas = timestamps[:, np.newaxis] - edge_times
-      edge_deltas_torch = torch.from_numpy(edge_deltas).float().to(self.device)
-      edge_time_embeddings = self.time_encoder(edge_deltas_torch)
-      neighbors_torch = torch.from_numpy(neighbors).long().to(self.device)
-      edge_features = self.edge_features[edge_idxs, :]
-      mask = neighbors_torch == 0
-      neighbors = neighbors.flatten() 
-      combined_nodes = np.hstack((source_nodes,neighbors))
-      neighbor_timestamps = np.repeat(timestamps, n_neighbors)
-      combined_timestamps = np.hstack((timestamps,neighbor_timestamps))
-      input_edge_times=np.hstack((input_edge_times,edge_times.flatten()))
-
-      n_source_nodes = len(source_nodes)
-      if self.args.not_fix_sampler:
-        combined_embeddings = self.new_compute_embedding(memory, combined_nodes, combined_timestamps, n_layers-1, n_neighbors, memory_updater,train,timestamps)
-      else:
-        combined_embeddings = self.new_compute_embedding(memory, combined_nodes, combined_timestamps, n_layers-1, n_neighbors, memory_updater,train,input_edge_times)
-      source_embeddings = combined_embeddings[:n_source_nodes,:]
-      neighbor_embeddings = combined_embeddings[n_source_nodes:,:]
-      neighbor_embeddings = neighbor_embeddings.view(n_source_nodes, n_neighbors, -1)
-      source_embeddings = self.aggregate(n_layers, source_embeddings,source_nodes_time_embedding, neighbor_embeddings,edge_time_embeddings,edge_features,mask)
-      return source_embeddings
-
-
-  def aggregate(self, n_layers, source_node_features, source_nodes_time_embedding,neighbor_embeddings,edge_time_embeddings, edge_features, mask):
-    return None
-
-
-
-@njit(parallel=True)
-def parallel_streaming_topk(source_nodes, timestamps, edge_idxs,n_tppr,k,tppr_finder):
-  
-  n_nodes=len(source_nodes)
-  batch_node_list = []
-  batch_edge_idxs_list = []
-  batch_delta_time_list = []
-  batch_weight_list = []
-
-  for _ in range(n_tppr):
-    batch_node_list.append(np.zeros((n_nodes, k),dtype=np.int32)) 
-    batch_edge_idxs_list.append(np.zeros((n_nodes, k),dtype=np.int32)) 
-    batch_delta_time_list.append(np.zeros((n_nodes, k),dtype=np.float32)) 
-    batch_weight_list.append(np.zeros((n_nodes, k),dtype=np.float32)) 
-
-
-  for i in prange(n_tppr):
-    batch_node,batch_edge_idxs,batch_delta_time,batch_weight=tppr_finder.single_streaming_topk(source_nodes,timestamps,edge_idxs,i)
-    batch_node_list[i] = batch_node
-    batch_edge_idxs_list[i] = batch_edge_idxs
-    batch_delta_time_list[i] = batch_delta_time
-    batch_weight_list[i] = batch_weight
-
-  return batch_node_list,batch_edge_idxs_list,batch_delta_time_list,batch_weight_list
-
-
-
 class GraphDiffusionEmbedding(GraphEmbedding):
-  def __init__(self, node_features, edge_features, memory, neighbor_finder, time_encoder, n_layers,n_node_features, n_edge_features, n_time_features, embedding_dimension, device,n_heads=2, dropout=0.1, use_memory=True,reuse=False,history_budget=-1,args=None, num_nodes = -1):
+  def __init__(self, node_features, edge_features, memory, neighbor_finder, time_encoder, n_layers,n_node_features, n_edge_features, n_time_features, embedding_dimension, device,n_heads=2, dropout=0.1, use_memory=True,args=None, num_nodes = -1):
     super(GraphDiffusionEmbedding, self).__init__(node_features, edge_features, memory,
                                             neighbor_finder, time_encoder, n_layers,
                                             n_node_features, n_edge_features,
                                             n_time_features,
                                             embedding_dimension, device,
                                             n_heads, dropout,
-                                            use_memory,reuse,history_budget,args,num_nodes)
+                                            use_memory,args,num_nodes)
 
     self.fc1 = torch.nn.Linear(embedding_dimension + n_time_features +n_edge_features, embedding_dimension)
     self.fc2 = torch.nn.Linear(embedding_dimension, embedding_dimension)
@@ -244,21 +129,68 @@ class GraphDiffusionEmbedding(GraphEmbedding):
     return self.tppr_finder.streaming_topk_no_fake(source_nodes,timestamps,edge_idxs)
 
 
-  def fill_tppr(self,sources, targets, timestamps, edge_idxs):
-    self.tppr_finder.fill_tppr(sources, targets,timestamps, edge_idxs)
+  def fill_tppr(self,sources, targets, timestamps, edge_idxs, tppr_filled):
+    if tppr_filled:
+      self.tppr_finder.restore_val_tppr()
+    else:
+      self.tppr_finder.compute_val_tppr(sources, targets,timestamps, edge_idxs)
 
-
-  # * last denotes the number of last items for check
+  '''
   def check_tppr_errors(self,sources, targets, timestamps, edge_idxs,last):
+    sources=np.array(sources)
+    targets=np.array(targets)
+    timestamps=np.array(timestamps)
+    edge_idxs=np.array(edge_idxs)
+
+    if self.tppr_strategy=='streaming':
+      self.fill_tppr(sources[:-last],targets[:-last],timestamps[:-last],edge_idxs[:-last],tppr_filled=False) 
+      batch_sources=sources[-last:]
+      batch_targets=targets[-last:]
+      batch_timestamps=timestamps[-last:]
+      batch_edge_idxs=edge_idxs[-last:]
+      nodes=np.concatenate((batch_sources,batch_targets))
+      timestamps=np.concatenate((batch_timestamps,batch_timestamps))
+      edge_idxs=np.concatenate((batch_edge_idxs,batch_edge_idxs))
+      selected_node_list,selected_edge_idxs_list,selected_delta_time_list,selected_weight_list=self.streaming_topk_no_fake(nodes, timestamps, edge_idxs) 
+      
+    elif self.tppr_strategy=='pruning':
+      batch_sources=sources[-last:]
+      batch_targets=targets[-last:]
+      batch_timestamps=timestamps[-last:]
+      nodes=np.concatenate((batch_sources,batch_targets))
+      timestamps=np.concatenate((batch_timestamps,batch_timestamps))
+      nodes=np.array(nodes,dtype=np.int32)
+      selected_node_list,selected_edge_idxs_list,selected_delta_time_list,selected_weight_list=self.pruning_topk(nodes, timestamps)
+
+
+    return selected_weight_list[0]
+    
+  def check_tppr_additive_errors_lower_bound(self,sources, targets, timestamps, edge_idxs,last):
+
+    sources=np.array(sources)
+    targets=np.array(targets)
+    timestamps=np.array(timestamps)
+    edge_idxs=np.array(edge_idxs)
+    batch_sources=sources[-last:]
+    batch_targets=targets[-last:]
+    batch_timestamps=timestamps[-last:]
+    nodes=np.concatenate((batch_sources,batch_targets))
+    timestamps=np.concatenate((batch_timestamps,batch_timestamps))
+    nodes=np.array(nodes,dtype=np.int32)
+    selected_node_list,selected_edge_idxs_list,selected_delta_time_list,selected_weight_list=self.pruning_topk_lower_bound(nodes, timestamps)
+
+    return selected_node_list[0],selected_delta_time_list[0],selected_weight_list[0]
+
+
+  def check_tppr_additive_errors(self,sources, targets, timestamps, edge_idxs,last):
 
     sources=np.array(sources)
     targets=np.array(targets)
     timestamps=np.array(timestamps)
     edge_idxs=np.array(edge_idxs)
 
-
     if self.tppr_strategy=='streaming':
-      self.fill_tppr(sources[:-last],targets[:-last],timestamps[:-last],edge_idxs[:-last]) 
+      self.fill_tppr(sources[:-last],targets[:-last],timestamps[:-last],edge_idxs[:-last],tppr_filled=False) 
       batch_sources=sources[-last:]
       batch_targets=targets[-last:]
       batch_timestamps=timestamps[-last:]
@@ -278,21 +210,16 @@ class GraphDiffusionEmbedding(GraphEmbedding):
       nodes=np.array(nodes,dtype=np.int32)
       selected_node_list,selected_edge_idxs_list,selected_delta_time_list,selected_weight_list=self.pruning_topk(nodes, timestamps)
 
-    #self.topk_sum=np.sum(selected_weight_list[0],axis=1)
-    #self.average_topk=np.mean(np.sum(selected_weight_list[0],axis=1))
-    #print(self.topk_sum)
-    #print(self.topk_sum.shape)
-    return selected_weight_list[0]
-    
-  def new_compute_embedding_tppr_ensemble(self, memory, source_nodes, timestamps, edge_idxs, memory_updater,train):
+    return selected_node_list[0],selected_delta_time_list[0],selected_weight_list[0]
+  '''
+
+
+  def compute_embedding_tppr_ensemble(self, memory, source_nodes, timestamps, edge_idxs, memory_updater,train):
 
     source_nodes=np.array(source_nodes,dtype=np.int32)
     t=time.time()
     if self.tppr_strategy=='streaming': 
-      # ! parallelization makes the code slower
-      selected_node_list,selected_edge_idxs_list,selected_delta_time_list,selected_weight_list=self.streaming_topk(source_nodes, timestamps, edge_idxs) 
-      #selected_node_list,selected_edge_idxs_list,selected_delta_time_list,selected_weight_list=parallel_streaming_topk(source_nodes, timestamps, edge_idxs,self.n_tppr,self.k,self.tppr_finder) 
-      
+      selected_node_list,selected_edge_idxs_list,selected_delta_time_list,selected_weight_list=self.streaming_topk(source_nodes, timestamps, edge_idxs)       
     elif self.tppr_strategy=='pruning':
       selected_node_list,selected_edge_idxs_list,selected_delta_time_list,selected_weight_list=self.pruning_topk(source_nodes, timestamps)
     self.t_tppr+=time.time()-t
@@ -369,6 +296,26 @@ class GraphDiffusionEmbedding(GraphEmbedding):
 
     return node_list,edge_idxs_list,delta_time_list,weight_list
 
+  '''
+  def pruning_topk_lower_bound(self,source_nodes, timestamps):
+    n_nodes=len(source_nodes)
+    node_list = []
+    edge_idxs_list = []
+    delta_time_list = []
+    weight_list = []
+
+    for _ in range(self.n_tppr):
+      node_list.append(np.zeros((n_nodes, self.k),dtype=np.int32)) 
+      edge_idxs_list.append(np.zeros((n_nodes, self.k),dtype=np.int32)) 
+      delta_time_list.append(np.zeros((n_nodes, self.k),dtype=np.float32)) 
+      weight_list.append(np.zeros((n_nodes, self.k),dtype=np.float32)) 
+
+    for i,alpha in enumerate(self.alpha_list):
+      beta=self.beta_list[i]
+      self.neighbor_finder.get_pruned_topk_lower_bound(source_nodes,timestamps,self.width,self.depth,alpha,beta,self.k,node_list[i],edge_idxs_list[i],delta_time_list[i],weight_list[i])
+
+    return node_list,edge_idxs_list,delta_time_list,weight_list
+  '''
 
   def transform_source(self,x):
     h = self.act(self.fc1_source(x))
@@ -392,7 +339,7 @@ class GraphDiffusionEmbedding(GraphEmbedding):
 
 ################A collection of less important components ############### 
 class GraphAttentionEmbedding(GraphEmbedding):
-  def __init__(self, node_features, edge_features, memory, neighbor_finder, time_encoder, n_layers,n_node_features, n_edge_features, n_time_features, embedding_dimension, device,n_heads=2, dropout=0.1, use_memory=True,reuse=False,history_budget=-1,args=None, num_nodes = -1):
+  def __init__(self, node_features, edge_features, memory, neighbor_finder, time_encoder, n_layers,n_node_features, n_edge_features, n_time_features, embedding_dimension, device,n_heads=2, dropout=0.1, use_memory=True,args=None, num_nodes = -1):
 
     super(GraphAttentionEmbedding, self).__init__(node_features, edge_features, memory,
                                                   neighbor_finder, time_encoder, n_layers,
@@ -400,7 +347,7 @@ class GraphAttentionEmbedding(GraphEmbedding):
                                                   n_time_features,
                                                   embedding_dimension, device,
                                                   n_heads, dropout,
-                                                  use_memory,reuse,history_budget,args,num_nodes)
+                                                  use_memory,args,num_nodes)
 
     self.attention_models = torch.nn.ModuleList(
       [TemporalAttentionLayer(
@@ -411,8 +358,7 @@ class GraphAttentionEmbedding(GraphEmbedding):
       n_head=n_heads,
       dropout=dropout,
       output_dimension=n_node_features)
-      for _ in range(n_layers)]
-      )
+      for _ in range(n_layers)])
 
 
   def aggregate(self, n_layer, source_node_features, source_nodes_time_embedding,
@@ -430,14 +376,10 @@ class GraphAttentionEmbedding(GraphEmbedding):
     return source_embedding
 
 
-
-
-
-
 class GraphSumEmbedding(GraphEmbedding):
   def __init__(self, node_features, edge_features, memory, neighbor_finder, time_encoder, n_layers,
                n_node_features, n_edge_features, n_time_features, embedding_dimension, device,
-               n_heads=2, dropout=0.1, use_memory=True):
+               n_heads=2, dropout=0.1, use_memory=True,args=None, num_nodes = -1):
     super(GraphSumEmbedding, self).__init__(node_features=node_features,
                                             edge_features=edge_features,
                                             memory=memory,
@@ -449,7 +391,9 @@ class GraphSumEmbedding(GraphEmbedding):
                                             embedding_dimension=embedding_dimension,
                                             device=device,
                                             n_heads=n_heads, dropout=dropout,
-                                            use_memory=use_memory)
+                                            use_memory=use_memory,
+                                            args=args,
+                                            num_nodes=num_nodes)
     self.linear_1 = torch.nn.ModuleList([torch.nn.Linear(embedding_dimension + n_time_features +n_edge_features, embedding_dimension) for _ in range(n_layers)])
     
     self.linear_2 = torch.nn.ModuleList([torch.nn.Linear(embedding_dimension + n_node_features + n_time_features,embedding_dimension) for _ in range(n_layers)])
@@ -474,7 +418,7 @@ def get_embedding_module(module_type, node_features, edge_features, memory, neig
                          time_encoder, n_layers, n_node_features, n_edge_features, n_time_features,
                          embedding_dimension, device,
                          n_heads=2, dropout=0.1, n_neighbors=None,
-                         use_memory=True,reuse=False,history_budget=0,args=None, num_nodes = -1):
+                         use_memory=True,args=None, num_nodes = -1):
 
   if module_type == "graph_attention":
     return GraphAttentionEmbedding(node_features=node_features,
@@ -489,7 +433,7 @@ def get_embedding_module(module_type, node_features, edge_features, memory, neig
                                     embedding_dimension=embedding_dimension,
                                     device=device,
                                     n_heads=n_heads, dropout=dropout, use_memory=use_memory,
-                                    reuse=reuse,history_budget=history_budget,args=args,num_nodes=num_nodes)
+                                    args=args,num_nodes=num_nodes)
 
   elif module_type == "graph_sum":
     return GraphSumEmbedding(node_features=node_features,
@@ -504,7 +448,7 @@ def get_embedding_module(module_type, node_features, edge_features, memory, neig
                               embedding_dimension=embedding_dimension,
                               device=device,
                               n_heads=n_heads, dropout=dropout, use_memory=use_memory,
-                              reuse=reuse,history_budget=history_budget,args=args,num_nodes=num_nodes)
+                              args=args,num_nodes=num_nodes)
 
 
   elif module_type == "diffusion":
@@ -520,7 +464,7 @@ def get_embedding_module(module_type, node_features, edge_features, memory, neig
                               embedding_dimension=embedding_dimension,
                               device=device,
                               n_heads=n_heads, dropout=dropout, use_memory=use_memory,
-                              reuse=reuse,history_budget=history_budget,args=args,num_nodes=num_nodes)
+                              args=args,num_nodes=num_nodes)
 
 
   elif module_type == "identity":
@@ -536,7 +480,7 @@ def get_embedding_module(module_type, node_features, edge_features, memory, neig
                              embedding_dimension=embedding_dimension,
                              device=device,
                              n_heads=n_heads, dropout=dropout, use_memory=use_memory,
-                             reuse=reuse,history_budget=history_budget,args=args,num_nodes=num_nodes)
+                             args=args,num_nodes=num_nodes)
 
   elif module_type == "time":
     return TimeEmbedding(node_features=node_features,

@@ -10,7 +10,7 @@ from pathlib import Path
 from evaluation.evaluation import eval_edge_prediction 
 from model.tgn_model import TGN
 from utils.util import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
-from utils.data_processing import get_data, compute_time_statistics
+from utils.data_processing import get_data
 from tqdm import tqdm
 from sklearn.metrics import average_precision_score, roc_auc_score, accuracy_score
 from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning, NumbaTypeSafetyWarning
@@ -19,10 +19,9 @@ warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
 warnings.simplefilter('ignore', category=NumbaPendingDeprecationWarning)
 warnings.simplefilter('ignore', category=NumbaTypeSafetyWarning)
 
-parser = argparse.ArgumentParser('TGN self-supervised training with diffusion models')
+parser = argparse.ArgumentParser('Self-supervised training with diffusion models')
 parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',default='wikipedia')
 parser.add_argument('--bs', type=int, default=200, help='Batch_size')
-parser.add_argument('--prefix', type=str, default='', help='Prefix to name the checkpoints')
 parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
 parser.add_argument('--n_head', type=int, default=2, help='Number of heads used in attention layer')
 parser.add_argument('--n_epoch', type=int, default=50, help='Number of epochs')
@@ -45,40 +44,14 @@ parser.add_argument('--node_dim', type=int, default=100, help='Dimensions of the
 parser.add_argument('--time_dim', type=int, default=100, help='Dimensions of the time embedding')
 parser.add_argument('--message_dim', type=int, default=100, help='Dimensions of the messages')
 parser.add_argument('--memory_dim', type=int, default=172, help='Dimensions of the memory for each user')
-
-parser.add_argument('--new', action='store_true', help='using the temmporal embeddings as query')
-parser.add_argument('--reuse', action='store_true', help='reuse historical embeddings')
-parser.add_argument('--reuse_test', action='store_true',help='reuse when testing')
-parser.add_argument('--budget', type=int, default=0, help='budget on the number of cached nodes')
-
 parser.add_argument('--save_best',action='store_true', help='store the largest model')
-parser.add_argument('--sampler', type=str, default="recent", help='[uniform|recent|weighted]')
-parser.add_argument('--bias', type=float, default=1e-4,help='parameter used in weighted sampling')
-parser.add_argument('--tppr_strategy', type=str, help='[streaming|pruning|None]')
+parser.add_argument('--tppr_strategy', type=str, help='[streaming|pruning]')
 parser.add_argument('--topk', type=int, default=10, help='keep the topk neighbor nodes')
 parser.add_argument('--alpha_list', type=float, nargs='+', help='ensemble idea, list of alphas')
 parser.add_argument('--beta_list', type=float, nargs='+', help='ensemble idea, list of betas')
-parser.add_argument('--not_fix_sampler', action='store_true', help='correct the sampler, use temporal sampler or not')
-parser.add_argument('--log_tppr', action='store_true', help='log the corresponding tppr values')
 
-# streaming version
-# python train.py --n_epoch 50 --n_degree 10 --n_layer 2 --bs 200 -d wikipedia --enable_random  --tppr_strategy None  --gpu 0 --save_best
 
-# python train.py --n_epoch 50 --n_degree 10 --n_layer 1 --bs 200 -d wikipedia --enable_random  --tppr_strategy None  --gpu 0 --save_best
-
-# pruning version
-# python train.py --n_epoch 2 --n_degree 10 --n_layer 2 --bs 200 -d wikipedia --enable_random  --tppr_strategy pruning  --gpu 7 --alpha_list 0.1 --beta_list 0.5 --topk 20
-
-# python train.py --n_epoch 50 --n_degree 10 --n_layer 2 --bs 200 -d large_wiki --enable_random  --tppr_strategy None   --gpu 2
-
-# pruning
-# python train.py --n_epoch 50 --n_degree 10 --n_layer 2 --bs 200 -d wikipedia --enable_random  --tppr_strategy pruning  --topk 20 --alpha_list 0 --beta_list 0.9 --gpu 1
-
-# streaming
-# python train.py --n_epoch 50 --n_degree 10 --n_layer 2 --bs 200 -d wikipedia --enable_random  --tppr_strategy streaming  --topk 20 --alpha_list 0 --beta_list 0.9 --gpu 1
-
-# streaming ensemble
-# python train.py --n_epoch 50 --n_degree 10 --n_layer 2 --bs 200 -d wikipedia --enable_random  --tppr_strategy streaming  --topk 20 --alpha_list 0 0 --beta_list 0.7 0.9 --gpu 2
+# python train.py --n_epoch 50 --n_degree 10 --n_layer 2 --bs 200 -d wikipedia --enable_random  --tppr_strategy streaming --gpu 0 --alpha_list 0.1 --beta_list 0.9
 
 args = parser.parse_args()
 NUM_NEIGHBORS = args.n_degree
@@ -98,7 +71,6 @@ MEMORY_DIM = args.memory_dim
 BATCH_SIZE = args.bs
 Path("./saved_checkpoints/").mkdir(parents=True, exist_ok=True)
 
-# TODO: let's train and save a model first, and check out whether the code works through
 if args.save_best:  
   best_checkpoint_path = f'./saved_checkpoints/{args.data}-{args.n_epoch}-{args.lr}-{args.tppr_strategy}-{str(args.alpha_list)}-{str(args.beta_list)}-{args.topk}.pth'
 else:
@@ -116,7 +88,7 @@ numba_logger = logging.getLogger('numba')
 numba_logger.setLevel(logging.WARNING)
 
 
-#################################### get filename here ####################################
+#################### get filename here #####################
 filename=args.data
 tppr_strategy=args.tppr_strategy
 if tppr_strategy!='None':
@@ -127,12 +99,7 @@ if tppr_strategy!='None':
   filename=filename+'_beta_'+str(args.beta_list)
   if tppr_strategy=='pruning':
     filename=filename+'_width_'+str(args.n_degree)+'_depth_'+str(args.n_layer)
-filename=filename+'_bs_'+str(BATCH_SIZE)+'_layer_'+str(args.n_layer)+'_epoch_'+str(args.n_epoch)+'_lr_'+str(args.lr)+'_'+args.sampler     
-
-if args.not_fix_sampler:
-  filename=filename+'_non_temporal_sampler'
-if args.sampler=='weighted':
-  filename=filename+'_bias_'+str(args.bias)
+filename=filename+'_bs_'+str(BATCH_SIZE)+'_layer_'+str(args.n_layer)+'_epoch_'+str(args.n_epoch)+'_lr_'+str(args.lr)    
 if args.enable_random:
   filename=filename+'_random_seed'
 print(filename)
@@ -151,6 +118,7 @@ logger.addHandler(ch)
 logger.info(args)
 
 
+################# get dataset and sampler ################
 node_features, edge_features, full_data, full_train_data, full_val_data, test_data, new_node_val_data,new_node_test_data = get_data(DATA)
 train_ngh_finder = get_neighbor_finder(full_train_data)
 full_ngh_finder = get_neighbor_finder(full_data)
@@ -190,8 +158,8 @@ for i in range(args.n_runs):
   stop_epoch=-1
 
   train_tppr_time=[]
+  tppr_filled = False
 
-  ################  enumerate training epochs ###############
   for epoch in range(NUM_EPOCH):
     t_epoch_train_start = time.time()
     tgn.reset_timer()
@@ -211,6 +179,7 @@ for i in range(args.n_runs):
     tgn.set_neighbor_finder(train_ngh_finder)
 
 
+    # model training
     for batch_idx in tqdm(range(0, num_batch)):
       start_idx = batch_idx * BATCH_SIZE
       end_idx = min(num_instance, start_idx + BATCH_SIZE)
@@ -225,33 +194,29 @@ for i in range(args.n_runs):
         pos_label = torch.ones(size, dtype=torch.float, device=device)
         neg_label = torch.zeros(size, dtype=torch.float, device=device)
 
-      cache_plan = None
       tgn = tgn.train()
       optimizer.zero_grad()
 
-      pos_prob, neg_prob = tgn.compute_edge_probabilities(sources_batch, destinations_batch, negatives_batch,timestamps_batch, edge_idxs_batch, NUM_NEIGHBORS, reuse=args.reuse, train=True,cache_plan=cache_plan)
-
+      pos_prob, neg_prob = tgn.compute_edge_probabilities(sources_batch, destinations_batch, negatives_batch,timestamps_batch, edge_idxs_batch, NUM_NEIGHBORS, train=True)
       loss = criterion(pos_prob.squeeze(), pos_label) + criterion(neg_prob.squeeze(), neg_label)
       loss.backward()
       optimizer.step()
 
       train_loss.append(loss.item())
       with torch.no_grad():
-        pos_prob=pos_prob.cpu().numpy() # (200,1)
-        neg_prob=neg_prob.cpu().numpy() # (200,1)
-        pred_score = np.concatenate([pos_prob, neg_prob]) # (400,1)
-        true_label = np.concatenate([np.ones(size), np.zeros(size)])   #(400,)
-        true_binary_label= np.zeros(size) #(200,)
-        pred_binary_label = np.argmax(np.hstack([pos_prob,neg_prob]),axis=1) # (400,)
+        pos_prob=pos_prob.cpu().numpy() 
+        neg_prob=neg_prob.cpu().numpy() 
+        pred_score = np.concatenate([pos_prob, neg_prob]) 
+        true_label = np.concatenate([np.ones(size), np.zeros(size)])  
+        true_binary_label= np.zeros(size)
+        pred_binary_label = np.argmax(np.hstack([pos_prob,neg_prob]),axis=1) 
         train_ap.append(average_precision_score(true_label, pred_score))
         train_auc.append(roc_auc_score(true_label, pred_score))
         train_acc.append(accuracy_score(true_binary_label, pred_binary_label))
 
 
-    ################## end of training iterations in an epoch ##################
     epoch_tppr_time = tgn.embedding_module.t_tppr
     train_tppr_time.append(epoch_tppr_time)
-    #average_topk=tgn.embedding_module.average_topk
 
     epoch_train_time = time.time() - t_epoch_train_start
     t_total_epoch_train+=epoch_train_time
@@ -260,11 +225,13 @@ for i in range(args.n_runs):
     train_acc=np.mean(train_acc)
     train_loss=np.mean(train_loss)
 
-    ############### ! change the tppr finder, very important step here ##############
+    # change the tppr finder to validation and test
     if args.tppr_strategy=='streaming':
       tgn.embedding_module.reset_tppr()
-      tgn.embedding_module.fill_tppr(train_data.sources, train_data.destinations, train_data.timestamps, train_data.edge_idxs)
+      tgn.embedding_module.fill_tppr(train_data.sources, train_data.destinations, train_data.timestamps, train_data.edge_idxs, tppr_filled)
+      tppr_filled = True
     tgn.set_neighbor_finder(full_ngh_finder)
+
 
 
     ########################  Model Validation on the Val Dataset #######################
@@ -274,7 +241,7 @@ for i in range(args.n_runs):
     if args.tppr_strategy=='streaming':
       train_tppr_backup = tgn.embedding_module.backup_tppr()
 
-    val_ap, val_auc, val_acc = eval_edge_prediction(model=tgn,negative_edge_sampler=val_rand_sampler,data=val_data,n_neighbors=NUM_NEIGHBORS,batch_size=BATCH_SIZE, reuse=args.reuse and args.reuse_test,cache_plan=None)
+    val_ap, val_auc, val_acc = eval_edge_prediction(model=tgn,negative_edge_sampler=val_rand_sampler,data=val_data,n_neighbors=NUM_NEIGHBORS,batch_size=BATCH_SIZE)
 
     val_memory_backup = tgn.memory.backup_memory()
     if args.tppr_strategy=='streaming':
@@ -284,7 +251,7 @@ for i in range(args.n_runs):
       tgn.embedding_module.restore_tppr(train_tppr_backup)
 
     ### inductive val
-    nn_val_ap, nn_val_auc, nn_val_acc = eval_edge_prediction(model=tgn,negative_edge_sampler=val_rand_sampler,data=new_node_val_data,n_neighbors=NUM_NEIGHBORS,batch_size=BATCH_SIZE,reuse=args.reuse and args.reuse_test,cache_plan=None)
+    nn_val_ap, nn_val_auc, nn_val_acc = eval_edge_prediction(model=tgn,negative_edge_sampler=val_rand_sampler,data=new_node_val_data,n_neighbors=NUM_NEIGHBORS,batch_size=BATCH_SIZE)
     tgn.memory.restore_memory(val_memory_backup)
     if args.tppr_strategy=='streaming':
       tgn.embedding_module.restore_tppr(val_tppr_backup)
@@ -320,14 +287,14 @@ for i in range(args.n_runs):
   if args.tppr_strategy=='streaming':
     val_tppr_backup = tgn.embedding_module.backup_tppr()
 
-  test_ap, test_auc, test_acc = eval_edge_prediction(model=tgn,negative_edge_sampler=test_rand_sampler,data=test_data,n_neighbors=NUM_NEIGHBORS,batch_size=BATCH_SIZE,reuse=args.reuse and args.reuse_test,cache_plan=None)
+  test_ap, test_auc, test_acc = eval_edge_prediction(model=tgn,negative_edge_sampler=test_rand_sampler,data=test_data,n_neighbors=NUM_NEIGHBORS,batch_size=BATCH_SIZE)
 
   tgn.memory.restore_memory(val_memory_backup)
   if args.tppr_strategy=='streaming':
     tgn.embedding_module.restore_tppr(val_tppr_backup)
 
   ### inductive test
-  nn_test_ap, nn_test_auc, nn_test_acc = eval_edge_prediction(model=tgn,negative_edge_sampler= nn_test_rand_sampler, data=new_node_test_data,n_neighbors=NUM_NEIGHBORS,batch_size=BATCH_SIZE, reuse=args.reuse and args.reuse_test,cache_plan=None)
+  nn_test_ap, nn_test_auc, nn_test_acc = eval_edge_prediction(model=tgn,negative_edge_sampler= nn_test_rand_sampler, data=new_node_test_data,n_neighbors=NUM_NEIGHBORS,batch_size=BATCH_SIZE)
   t_test=time.time()-t_test_start
 
   train_tppr_time=np.array(train_tppr_time)[1:]

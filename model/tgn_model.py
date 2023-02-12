@@ -46,7 +46,6 @@ class TGN(torch.nn.Module):
     self.n_edge_features = self.edge_raw_features.shape[1]
 
 
-    # * set dimension of the intermediate embeddings to node feature size
     self.embedding_dimension = self.n_node_features
     self.n_neighbors = n_neighbors
     self.embedding_module_type = embedding_module_type
@@ -60,11 +59,9 @@ class TGN(torch.nn.Module):
     self.use_memory = use_memory
     self.memory = None
 
-    # * memory and node should have the same feature dimension, since they sum the two
     #self.memory_dimension = memory_dimension
     self.memory_dimension=self.n_node_features
 
-    # * recompute the message dimension here
     # 2*MEM_DIM+EDGE_DIM+TIME_DIM
     raw_message_dimension = 2 * self.memory_dimension + self.n_edge_features + \
                             self.time_encoder.dimension
@@ -94,7 +91,6 @@ class TGN(torch.nn.Module):
                                                  node_features=None,
                                                  edge_features=self.edge_raw_features,
                                                  memory=self.memory, 
-                                                 # don't receive this parameter
                                                  neighbor_finder=self.neighbor_finder,
                                                  time_encoder=self.time_encoder,
                                                  n_layers=self.n_layers,
@@ -106,8 +102,6 @@ class TGN(torch.nn.Module):
                                                  n_heads=n_heads, dropout=dropout,
                                                  use_memory=use_memory,
                                                  n_neighbors=self.n_neighbors,
-                                                 reuse=self.args.reuse,
-                                                 history_budget=self.args.budget,
                                                  args=args,
                                                  num_nodes= self.n_nodes)
 
@@ -133,7 +127,8 @@ class TGN(torch.nn.Module):
     self.embedding_module.t_tppr=0
 
 
-  def compute_temporal_embeddings(self, source_nodes, destination_nodes, negative_nodes, edge_times,edge_idxs, n_neighbors, reuse, train, cache_plan):
+  # TODO: remove reuse and cache plan etc...
+  def compute_temporal_embeddings(self, source_nodes, destination_nodes, negative_nodes, edge_times,edge_idxs, n_neighbors, train):
 
     self.batch_counter+=1
     n_samples = len(source_nodes)
@@ -158,11 +153,7 @@ class TGN(torch.nn.Module):
       memory = self.memory.memory
 
     
-    if self.args.tppr_strategy!='None':
-      node_embedding = self.embedding_module.new_compute_embedding_tppr_ensemble(memory=memory,source_nodes=nodes,timestamps=timestamps,edge_idxs=edge_idxs,memory_updater = self.memory_updater,train=train)
-    else:
-      node_embedding = self.embedding_module.new_compute_embedding(memory=memory,source_nodes=nodes,timestamps=timestamps,n_layers=self.n_layers,n_neighbors=n_neighbors,memory_updater = self.memory_updater,train=train,input_edge_times=timestamps)
-
+    node_embedding = self.embedding_module.compute_embedding_tppr_ensemble(memory=memory,source_nodes=nodes,timestamps=timestamps,edge_idxs=edge_idxs,memory_updater = self.memory_updater,train=train)
   
     source_node_embedding = node_embedding[:n_samples]
     destination_node_embedding = node_embedding[n_samples: 2 * n_samples]
@@ -192,12 +183,11 @@ class TGN(torch.nn.Module):
 
 
 
-  def compute_edge_probabilities(self, source_nodes, destination_nodes, negative_nodes, edge_times,edge_idxs, n_neighbors,reuse,train,cache_plan):
+  def compute_edge_probabilities(self, source_nodes, destination_nodes, negative_nodes, edge_times,edge_idxs, n_neighbors,train):
 
-    
     #### compute temporal embedding ####
     n_samples = len(source_nodes)
-    source_node_embedding, destination_node_embedding, negative_node_embedding = self.compute_temporal_embeddings(source_nodes, destination_nodes, negative_nodes, edge_times, edge_idxs, n_neighbors,reuse,train,cache_plan)
+    source_node_embedding, destination_node_embedding, negative_node_embedding = self.compute_temporal_embeddings(source_nodes, destination_nodes, negative_nodes, edge_times, edge_idxs, n_neighbors,train)
 
     #### calculate prediction score ####
     score = self.affinity_score(torch.cat([source_node_embedding, source_node_embedding], dim=0),torch.cat([destination_node_embedding,negative_node_embedding])).squeeze(dim=0)
@@ -235,7 +225,7 @@ class TGN(torch.nn.Module):
     source_memory = self.memory.get_memory(unique_source_nodes) if not self.use_source_embedding_in_message else source_node_embedding
     destination_memory = self.memory.get_memory(unique_destination_nodes) if not self.use_destination_embedding_in_message else destination_node_embedding
 
-    # time delta embedding
+    # delta time embedding
     source_time_delta = edge_times - self.memory.last_update[unique_source_nodes,]
     source_time_delta_encoding = self.time_encoder(source_time_delta.unsqueeze(dim=1)).view(len(unique_source_nodes,), -1)
 

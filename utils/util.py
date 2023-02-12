@@ -1,7 +1,7 @@
 from pickle import TRUE
 import numpy as np
 from numba.experimental import jitclass
-from numba import int32, float32, types, typed, njit,jit
+from numba import types, typed
 import numba as nb
 import sys
 import torch
@@ -176,10 +176,12 @@ class NeighborFinder:
 
   # ! previous error reason: the type of query node is int64
   # ! but in the neighbor finder, target nodes are organized in int32
-  # ! both sorted() and heapq do not support key
+  # ! sorted() and heapq do not support key
   # ! if we do not use key=itemgetter(1), then the dict is sorted by keys
   # topk_pairs=heapq.nlargest(k, tppr_dict.items(), key=itemgetter(1)) # list (key,value) pairs
   # tppr_size=len(topk_pairs)
+
+
   def get_pruned_topk(self,source_nodes,timestamps, width, depth, alpha, beta, k, node_list,edge_idxs_list,delta_time_list,weight_list):
     
     for i,(target_node, target_timestamp) in enumerate(zip(source_nodes, timestamps)):
@@ -274,6 +276,104 @@ class NeighborFinder:
       weight_list[i]=tmp_weights
 
 
+
+
+  '''
+  def get_pruned_topk_lower_bound(self,source_nodes,timestamps, width, depth, alpha, beta, k, node_list,edge_idxs_list,delta_time_list,weight_list):
+    
+    for i,(target_node, target_timestamp) in enumerate(zip(source_nodes, timestamps)):
+      tppr_dict=nb.typed.Dict.empty(
+        key_type=nb_key_type,
+        value_type=types.float64,
+      )
+
+      ######* get dictionary of neighbors ######
+      query_list=typed.List()
+      query_list.append((target_node,target_timestamp,1.0))
+
+      for dep in range(depth):
+        new_query_list=nb.typed.List()
+
+        ### traverse the query list
+        for query_node,query_timestamp,query_weight in query_list:
+          neighbors, edge_idxs, edge_times = self.find_before(query_node,query_timestamp)  
+          n_ngh=len(neighbors)
+
+          if n_ngh==0:
+            continue
+          else:
+            norm=beta/(1-beta)*(1-pow(beta,n_ngh))
+            weight=query_weight*(1-alpha)*beta/norm*alpha if alpha!=0 and dep==0 else query_weight*(1-alpha)*beta/norm
+
+            for z in range(min(width,n_ngh)):
+              edge_idx = edge_idxs[-(z+1)]
+              node =neighbors[-(z+1)]
+
+              timestamp = edge_times[-(z+1)]
+              state = (edge_idx,node,timestamp)
+
+              # update dict
+              # here is the lower bound design
+              if state in tppr_dict:
+                if tppr_dict[state]<weight:
+                  tppr_dict[state]=weight
+              else:
+                tppr_dict[state]=weight
+
+              # update query list
+              new_query=(node,timestamp,weight)
+              new_query_list.append(new_query)
+
+              # update weight
+              weight=weight*beta
+
+        if len(new_query_list)==0:
+          break
+        else:
+          query_list=new_query_list
+      
+      ######* sort and get the top-k neighbors ######
+      tppr_size=len(tppr_dict)
+      if tppr_size==0:
+        continue
+
+      current_timestamp=timestamps[i]
+      tmp_nodes=np.zeros(k,dtype=np.int32)
+      tmp_edge_idxs=np.zeros(k,dtype=np.int32)
+      tmp_timestamps=np.zeros(k,dtype=np.float32)
+      tmp_weights=np.zeros(k,dtype=np.float32)
+
+
+      ### ! this is an array of tuple..., unbelieveable
+      #keys = np.array(list(tppr_dict.keys()))
+      keys = list(tppr_dict.keys())
+      values = np.array(list(tppr_dict.values()))
+      if tppr_size<=k:
+        inds=np.arange(tppr_size)
+      else:
+        inds = np.argsort(values)[-k:]
+        
+      for j,ind in enumerate(inds):
+        key=keys[ind]
+        weight=values[ind]
+        edge_idx=key[0]
+        node=key[1]
+        timestamp=key[2]
+
+        tmp_nodes[j]=node
+        tmp_edge_idxs[j]=edge_idx
+        tmp_timestamps[j]=timestamp
+        tmp_weights[j]=weight
+
+      tmp_timestamps=current_timestamp-tmp_timestamps
+      node_list[i]=tmp_nodes
+      edge_idxs_list[i]=tmp_edge_idxs
+      delta_time_list[i]=tmp_timestamps
+      weight_list[i]=tmp_weights
+  '''
+
+
+
 spec_tppr_finder = [
     ('num_nodes', types.int64),        
     ('k', types.int64),  
@@ -282,6 +382,8 @@ spec_tppr_finder = [
     ('beta_list', types.List(types.float64)),
     ('norm_list', types.ListType(types.Array(types.float64, 1, 'C'))),
     ('PPR_list', nb.typeof(list_list_dict)),
+    ('val_norm_list', types.ListType(types.Array(types.float64, 1, 'C'))),
+    ('val_PPR_list', nb.typeof(list_list_dict)),
 ]
 
 
@@ -294,7 +396,25 @@ class tppr_finder:
     self.n_tppr=n_tppr
     self.alpha_list=alpha_list
     self.beta_list=beta_list
+    self.reset_val_tppr()
     self.reset_tppr()
+
+  def reset_val_tppr(self):
+    norm_list=typed.List()
+    PPR_list=typed.List()
+    for _ in range(self.n_tppr):
+      temp_PPR_list=typed.List()
+      for _ in range(self.num_nodes):
+        tppr_dict = nb.typed.Dict.empty(
+          key_type=nb_key_type,
+          value_type=types.float64,
+        )
+        temp_PPR_list.append(tppr_dict)
+      norm_list.append(np.zeros(self.num_nodes,dtype=np.float64))
+      PPR_list.append(temp_PPR_list)
+
+    self.val_norm_list=norm_list
+    self.val_PPR_list=PPR_list
 
   def reset_tppr(self):
     norm_list=typed.List()
@@ -318,6 +438,10 @@ class tppr_finder:
 
   def restore_tppr(self,backup):
     self.norm_list,self.PPR_list=backup
+
+  def restore_val_tppr(self):
+    self.norm_list = self.val_norm_list.copy()
+    self.PPR_list = self.val_PPR_list.copy()
 
 
   def extract_streaming_tppr(self,tppr,current_timestamp,k,node_list,edge_idxs_list,delta_time_list,weight_list,position):
@@ -376,7 +500,7 @@ class tppr_finder:
         edge_idx=edge_idxs[i]
         pairs=[(source,target),(target,source)] if source!=target else [(source,target)]
 
-        ########### ! first extract the top-k neighbors and fill in the list ###########
+        ########### ! first extract the top-k neighbors and fill the list ###########
         self.extract_streaming_tppr(PPR_list[source],timestamp,self.k,batch_node_list[index0],batch_edge_idxs_list[index0],batch_delta_time_list[index0],batch_weight_list[index0],i)
         self.extract_streaming_tppr(PPR_list[target],timestamp,self.k,batch_node_list[index0],batch_edge_idxs_list[index0],batch_delta_time_list[index0],batch_weight_list[index0],i+n_edges)
         self.extract_streaming_tppr(PPR_list[fake],timestamp,self.k,batch_node_list[index0],batch_edge_idxs_list[index0],batch_delta_time_list[index0],batch_weight_list[index0],i+2*n_edges)
@@ -450,8 +574,6 @@ class tppr_finder:
           norm_list[source]=norm_list[source]*beta+beta
 
     return batch_node_list,batch_edge_idxs_list,batch_delta_time_list,batch_weight_list
-
-
 
 
 
@@ -555,15 +677,6 @@ class tppr_finder:
         norm_list[source]=norm_list[source]*beta+beta
 
     return batch_node,batch_edge_idxs,batch_delta_time,batch_weight
-
-
-
-
-
-
-
-
-
 
 
   def streaming_topk_no_fake(self,source_nodes, timestamps, edge_idxs):
@@ -670,16 +783,8 @@ class tppr_finder:
 
 
 
-
-
-
-
-
-
-
-
   # one pass of the data to fill T-PPR values
-  def fill_tppr(self,sources, targets, timestamps, edge_idxs):
+  def compute_val_tppr(self,sources, targets, timestamps, edge_idxs):
 
     n_edges=len(sources)
     ###########  enumerate tppr models ###########
@@ -763,4 +868,7 @@ class tppr_finder:
         else:
           PPR_list[source]=new_s1_PPR
           norm_list[source]=norm_list[source]*beta+beta
+
+    self.val_norm_list = self.norm_list.copy()
+    self.val_PPR_list = self.PPR_list.copy()
 

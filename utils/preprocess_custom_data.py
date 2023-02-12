@@ -95,7 +95,6 @@ def reindex(df, bipartite=True):
   return new_df
 
 
-# TODO: we should be very careful about whether the input graph is bipartie or not
 def run(data_name, bipartite=True):
   Path("data/").mkdir(parents=True, exist_ok=True)
   PATH = f'./data/{data_name}/{data_name}'
