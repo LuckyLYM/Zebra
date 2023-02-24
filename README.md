@@ -1,8 +1,6 @@
 Zebra: When Temporal Graph Neural Networks Meet Temporal Personalized PageRank
 =============================================================================
 
-Code repository for the VLDB2023 paper
-
 ## Dataset
 6 datasets were used in this paper:
 
