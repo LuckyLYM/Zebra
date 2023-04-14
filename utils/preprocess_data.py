@@ -4,8 +4,7 @@ import pandas as pd
 from pathlib import Path
 import argparse
 
-
-
+# python preprocess_data.py --data large_reddit
 def preprocess(data_name):
   u_list, i_list, ts_list, label_list = [], [], [], []
   feat_l = []
@@ -20,9 +19,6 @@ def preprocess(data_name):
       ts = float(e[2])
       label = float(e[3])  # int(e[3])
       feat = np.array([float(x) for x in e[4:]])
-
-      if idx==1:
-        print(f'feature length {len(feat)}')
 
       u_list.append(u)
       i_list.append(i)
@@ -41,6 +37,8 @@ def preprocess(data_name):
 def reindex(df, bipartite=True):
   new_df = df.copy()
 
+  # !------- if bipartite, then we increment the item node id by # users
+  # !------- so that they are in the same id system
   if bipartite:
     assert (df.u.max() - df.u.min() + 1 == len(df.u.unique()))
     assert (df.i.max() - df.i.min() + 1 == len(df.i.unique()))
@@ -69,27 +67,18 @@ def run(data_name, bipartite=True):
 
   OUT_DF = f'./data/{data_name}/ml_{data_name}.csv'
   OUT_FEAT = f'./data/{data_name}/ml_{data_name}.npy'
-  OUT_NODE_FEAT = f'./data/{data_name}/ml_{data_name}_node.npy'
 
+
+  # *-------- simply read data as a pdframe
   df, feat = preprocess(PATH)
   new_df = reindex(df, bipartite)
-
-
+  new_df.to_csv(OUT_DF)
+  
   empty = np.zeros(feat.shape[1])[np.newaxis, :]
   feat = np.vstack([empty, feat])
-  max_idx = max(new_df.u.max(), new_df.i.max())
-
-  feat=np.zeros((feat.shape[0],0))
-  
-  rand_feat = np.zeros((max_idx + 1, 172))
-  new_df.to_csv(OUT_DF)
   np.save(OUT_FEAT, feat)
 
-  np.save(OUT_NODE_FEAT, rand_feat)
 
-
-# python preprocess_data.py --data reddit_non --bipartite 
-# python preprocess_data.py --data wikipedia_non --bipartite 
 parser = argparse.ArgumentParser('Interface for TGN data preprocessing')
 parser.add_argument('--data', type=str, help='Dataset name (eg. wikipedia or reddit)',default='wikipedia')
 parser.add_argument('--bipartite', action='store_true', help='Whether the graph is bipartite')

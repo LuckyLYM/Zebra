@@ -10,7 +10,7 @@ from pathlib import Path
 from evaluation.evaluation import eval_edge_prediction 
 from model.tgn_model import TGN
 from utils.util import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
-from utils.data_processing import get_data
+from utils.data_processing import get_data, load_feat
 from tqdm import tqdm
 from sklearn.metrics import average_precision_score, roc_auc_score, accuracy_score
 from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning, NumbaTypeSafetyWarning
@@ -29,27 +29,30 @@ parser.add_argument('--n_layer', type=int, default=2, help='Number of network la
 parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
 parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping')
 parser.add_argument('--n_runs', type=int, default=1, help='Number of runs')
-parser.add_argument('--drop_out', type=float, default=0.1, help='Dropout probability')
+parser.add_argument('--drop_out', type=float, default=0.3, help='Dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='Idx for the gpu to use')
 parser.add_argument('--use_memory', default=True, type=bool, help='Whether to augment the model with a node memory')
 parser.add_argument('--use_destination_embedding_in_message', action='store_true',help='Whether to use the embedding of the destination node as part of the message')
 parser.add_argument('--use_source_embedding_in_message', action='store_true',help='Whether to use the embedding of the source node as part of the message')
-parser.add_argument('--dyrep', action='store_true',help='Whether to run the dyrep model')
+
 parser.add_argument('--message_function', type=str, default="identity", choices=["mlp", "identity"], help='Type of message function')
 parser.add_argument('--memory_updater', type=str, default="gru", choices=["gru", "rnn"], help='Type of memory updater')
 parser.add_argument('--embedding_module', type=str, default="graph_attention", help='Type of embedding module')
+
 parser.add_argument('--enable_random', action='store_true',help='use random seeds')
 parser.add_argument('--aggregator', type=str, default="last", help='Type of message aggregator')
-parser.add_argument('--node_dim', type=int, default=100, help='Dimensions of the node embedding')
-parser.add_argument('--time_dim', type=int, default=100, help='Dimensions of the time embedding')
-parser.add_argument('--message_dim', type=int, default=100, help='Dimensions of the messages')
-parser.add_argument('--memory_dim', type=int, default=172, help='Dimensions of the memory for each user')
 parser.add_argument('--save_best',action='store_true', help='store the largest model')
 parser.add_argument('--tppr_strategy', type=str, help='[streaming|pruning]')
 parser.add_argument('--topk', type=int, default=10, help='keep the topk neighbor nodes')
 parser.add_argument('--alpha_list', type=float, nargs='+', help='ensemble idea, list of alphas')
 parser.add_argument('--beta_list', type=float, nargs='+', help='ensemble idea, list of betas')
 
+
+parser.add_argument('--ignore_edge_feats', action='store_true')
+parser.add_argument('--ignore_node_feats', action='store_true')
+parser.add_argument('--node_dim', type=int, default=100, help='Dimensions of the node embedding')
+parser.add_argument('--time_dim', type=int, default=100, help='Dimensions of the time embedding')
+parser.add_argument('--memory_dim', type=int, default=100, help='Dimensions of the memory for each user')
 
 # python train.py --n_epoch 50 --n_degree 10 --n_layer 2 --bs 200 -d wikipedia --enable_random  --tppr_strategy streaming --gpu 0 --alpha_list 0.1 --beta_list 0.9
 
@@ -66,7 +69,6 @@ LEARNING_RATE = args.lr
 USE_MEMORY = True
 NODE_DIM = args.node_dim
 TIME_DIM = args.time_dim
-MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
 BATCH_SIZE = args.bs
 Path("./saved_checkpoints/").mkdir(parents=True, exist_ok=True)
@@ -118,8 +120,21 @@ logger.addHandler(ch)
 logger.info(args)
 
 
-################# get dataset and sampler ################
-node_features, edge_features, full_data, full_train_data, full_val_data, test_data, new_node_val_data,new_node_test_data = get_data(DATA)
+full_data, full_train_data, full_val_data, test_data, new_node_val_data, new_node_test_data, n_nodes, n_edges = get_data(DATA)
+args.n_nodes = n_nodes +1
+args.n_edges = n_edges +1
+
+node_feats, edge_feats = load_feat(args.data)
+if args.ignore_node_feats:
+  print('>>> Ignore node features')
+  node_feats = None
+  node_feat_dims = 0
+
+if edge_feats is None or args.ignore_edge_feats: 
+  print('>>> Ignore edge features')
+  edge_feats = np.zeros((args.n_edges, 1))
+  edge_feat_dims = 1
+
 train_ngh_finder = get_neighbor_finder(full_train_data)
 full_ngh_finder = get_neighbor_finder(full_data)
 train_rand_sampler = RandEdgeSampler(full_train_data.sources, full_train_data.destinations)
@@ -132,11 +147,9 @@ device = torch.device(device_string)
 
 
 for i in range(args.n_runs):
-  tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_features,
-            edge_features=edge_features, device=device,
-            n_layers=NUM_LAYER,
-            n_heads=NUM_HEADS, dropout=DROP_OUT, use_memory=USE_MEMORY,
-            message_dimension=MESSAGE_DIM, memory_dimension=MEMORY_DIM,
+  tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_feats, edge_features=edge_feats, device=device,
+            n_layers=NUM_LAYER,n_heads=NUM_HEADS, dropout=DROP_OUT, use_memory=USE_MEMORY,
+            node_dimension = NODE_DIM, time_dimension = TIME_DIM, memory_dimension=MEMORY_DIM,
             embedding_module_type=args.embedding_module, 
             message_function=args.message_function, 
             aggregator_type=args.aggregator,
@@ -144,7 +157,6 @@ for i in range(args.n_runs):
             n_neighbors=NUM_NEIGHBORS,
             use_destination_embedding_in_message=args.use_destination_embedding_in_message,
             use_source_embedding_in_message=args.use_source_embedding_in_message,
-            dyrep=args.dyrep,
             args=args)
 
   criterion = torch.nn.BCELoss()

@@ -10,18 +10,16 @@ from modules.message_function import get_message_function
 from modules.memory_updater import get_memory_updater
 from modules.embedding_module import get_embedding_module
 from model.time_encoding import TimeEncode
-import sys
 
 class TGN(torch.nn.Module):
   def __init__(self, neighbor_finder, node_features, edge_features, device, n_layers=2,
                n_heads=2, dropout=0.1, use_memory=False,
-               message_dimension=100,
-               memory_dimension=500, embedding_module_type="graph_attention",
+               node_dimension =100, time_dimension =100,
+               memory_dimension=100, embedding_module_type="graph_attention",
                message_function="mlp", n_neighbors=None, aggregator_type="last",
                memory_updater_type="gru",
                use_destination_embedding_in_message=False,
                use_source_embedding_in_message=False,
-               dyrep=False,
                args=None):
     super(TGN, self).__init__()
 
@@ -41,30 +39,26 @@ class TGN(torch.nn.Module):
 
 
     self.edge_raw_features = torch.from_numpy(edge_features.astype(np.float32)).to(device)
-    self.n_nodes = node_features.shape[0]
-    self.n_node_features = node_features.shape[1]
     self.n_edge_features = self.edge_raw_features.shape[1]
+    self.n_nodes = args.n_nodes
+    self.time_dimension = time_dimension
+    self.memory_dimension= memory_dimension
+    self.embedding_dimension = node_dimension
+    self.n_node_features = self.embedding_dimension
 
-
-    self.embedding_dimension = self.n_node_features
     self.n_neighbors = n_neighbors
     self.embedding_module_type = embedding_module_type
-
     self.use_destination_embedding_in_message = use_destination_embedding_in_message
     self.use_source_embedding_in_message = use_source_embedding_in_message
-    self.dyrep = dyrep
 
     # dimension of time features = diemnsion of node features
-    self.time_encoder = TimeEncode(dimension=self.n_node_features)
+    self.time_encoder = TimeEncode(dimension=self.time_dimension)
     self.use_memory = use_memory
     self.memory = None
 
-    #self.memory_dimension = memory_dimension
-    self.memory_dimension=self.n_node_features
-
     # 2*MEM_DIM+EDGE_DIM+TIME_DIM
     raw_message_dimension = 2 * self.memory_dimension + self.n_edge_features + \
-                            self.time_encoder.dimension
+                            self.time_dimension
     
     # decide the message dimension
     message_dimension = message_dimension if message_function != "identity" else raw_message_dimension
@@ -96,7 +90,7 @@ class TGN(torch.nn.Module):
                                                  n_layers=self.n_layers,
                                                  n_node_features=self.n_node_features,
                                                  n_edge_features=self.n_edge_features,
-                                                 n_time_features=self.n_node_features,
+                                                 n_time_features=self.time_dimension,
                                                  embedding_dimension=self.embedding_dimension,
                                                  device=self.device,
                                                  n_heads=n_heads, dropout=dropout,
@@ -127,7 +121,6 @@ class TGN(torch.nn.Module):
     self.embedding_module.t_tppr=0
 
 
-  # TODO: remove reuse and cache plan etc...
   def compute_temporal_embeddings(self, source_nodes, destination_nodes, negative_nodes, edge_times,edge_idxs, n_neighbors, train):
 
     self.batch_counter+=1
@@ -164,14 +157,14 @@ class TGN(torch.nn.Module):
       self.memory.clear_messages(unique_positives)
 
     with torch.no_grad(): # collect raw messages
-      source_nodes=np.concatenate([source_nodes,destination_nodes])
-      destination_nodes=np.concatenate([destination_nodes,source_nodes])
+      source_nodes_=np.concatenate([source_nodes,destination_nodes])
+      destination_nodes_=np.concatenate([destination_nodes,source_nodes])
       edge_times=np.concatenate([edge_times,edge_times])
       edge_idxs=np.concatenate([edge_idxs,edge_idxs])
 
       concat_source_node_embedding=torch.cat((source_node_embedding,destination_node_embedding))
       concat_destination_node_embedding=torch.cat((destination_node_embedding,source_node_embedding))
-      unique_sources, source_messages, source_edge_times = self.get_raw_messages(source_nodes,concat_source_node_embedding,destination_nodes,concat_destination_node_embedding,edge_times, edge_idxs)
+      unique_sources, source_messages, source_edge_times = self.get_raw_messages(source_nodes_,concat_source_node_embedding,destination_nodes_,concat_destination_node_embedding,edge_times, edge_idxs)
       self.memory.store_raw_messages(unique_sources, source_messages, source_edge_times)
 
     if not train: # update memory without gradients
@@ -179,7 +172,6 @@ class TGN(torch.nn.Module):
       self.memory.clear_messages(unique_positives)
 
     return source_node_embedding, destination_node_embedding, negative_node_embedding
-
 
 
 

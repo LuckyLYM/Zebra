@@ -20,6 +20,7 @@ def preprocess(data_name):
       ts = float(e[2])
       label_list.append(0)
       feat = np.array([float(x) for x in e[3:]])
+      print(feat)
       u_list.append(u)
       i_list.append(i)
       ts_list.append(ts)
@@ -73,7 +74,7 @@ def preprocess(data_name):
                        'i': i_list,
                        'ts': ts_list,
                        'label': label_list,
-                       'idx': idx_list}), np.array(feat_l)
+                       'idx': idx_list})
 
 
 def reindex(df, bipartite=True):
@@ -99,25 +100,13 @@ def run(data_name, bipartite=True):
   Path("data/").mkdir(parents=True, exist_ok=True)
   PATH = f'./data/{data_name}/{data_name}'
   OUT_DF = f'./data/{data_name}/ml_{data_name}.csv'
-  OUT_FEAT = f'./data/{data_name}/ml_{data_name}.npy'
-  OUT_NODE_FEAT = f'./data/{data_name}/ml_{data_name}_node.npy'
 
-  df, feat = preprocess(PATH)
+  df = preprocess(PATH)
   new_df = reindex(df, bipartite)
-
-  # process edge features
-  empty = np.zeros(feat.shape[1])[np.newaxis, :]
-  feat = np.vstack([empty, feat])
-  max_idx = max(new_df.u.max(), new_df.i.max())
-  
-  # randomized node features
-  rand_feat = np.zeros((max_idx + 1, 172))
   new_df.to_csv(OUT_DF)
-  np.save(OUT_FEAT, feat)
-  np.save(OUT_NODE_FEAT, rand_feat)
 
 
-# python preprocess_custom_data.py --data superuser
+# python preprocess_custom_data.py --data askubuntu
 parser = argparse.ArgumentParser('Interface for TGN data preprocessing')
 parser.add_argument('--data', type=str, help='Dataset name (eg. wikipedia or reddit)',default='wikipedia')
 parser.add_argument('--bipartite', action='store_true', help='Whether the graph is bipartite')
